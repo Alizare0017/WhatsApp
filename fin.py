@@ -11,14 +11,18 @@ from time import sleep
 import sys
 import logging
 import sqlite3
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtWidgets import QMessageBox, QGraphicsOpacityEffect
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import QThread, pyqtSignal
 
+profilepopup_status = [False]
+tokenPopup_status = [False]
 login_status = [False]
 login_detail = {'username':'', 'token':''}
 logging.basicConfig(filename="log.txt",
@@ -32,7 +36,7 @@ options.add_argument('--headless')
 options.add_argument('--disable-gpu')
 options.add_argument("--window-size=1920,1080")
 options.add_argument(f'user-agent={user_agent}')
-driver = webdriver.Chrome(options=options)
+driver = webdriver.Chrome()
 wait = WebDriverWait(driver, 30)
 
 class TokenThread(QThread):
@@ -43,24 +47,23 @@ class TokenThread(QThread):
         self.username = username
         
     def run(self):
-        
         con = sqlite3.connect("test.db")
         cur = con.cursor()
         params = (self.token_in,self.username)
         try :  
-            print(cur.execute("SELECT * FROM user WHERE user_token==? AND username==?",params))
             user = cur.execute("SELECT * FROM user WHERE user_token==? AND username==?",params).fetchall()
             print(user[0][3],user[0][4])
             if user[0][3] >= user[0][4] :
+                login_status[0] = False 
                 return self.update_progress.emit('Token Expired 🦕')
-            # self.update_progress.emit('Token Validated :) ✔')
-            login_status[0] = True
-            print(login_status[0])
+            login_status[0] = True  
             return self.update_progress.emit('Token Validated ✔')
+
         except:
             return self.update_progress.emit('Invalid username or Token')
         
 class QrThread(QThread):
+
     update_progress = pyqtSignal(str)
     def __init__(self,parent=None):
         super(QrThread,self).__init__(parent)
@@ -68,7 +71,6 @@ class QrThread(QThread):
     def run(self):
         if login_status[0] == False :
             return self.update_progress.emit('< Insert your token first >')
-
         try:
             driver.get("https://web.whatsapp.com/")
             try :
@@ -83,38 +85,53 @@ class QrThread(QThread):
             self.update_progress.emit('Qrcode Updated !')
         except:
             self.update_progress.emit('Can not reach Whatsapp.com !')
-            
+
 class SendThread(QThread):
     update_progress = pyqtSignal(str)
     error_handler = pyqtSignal(str)
+    progress = pyqtSignal(int)
     def __init__(self,parent=None, token_in='', username=''):
         super(SendThread,self).__init__(parent)
+
+        self.total = 100
         self.token_in = token_in
         self.username = username
+        self.is_paused = False
+        self.is_killed = False
+        
+        
     def run(self):
-        if login_status[0] == False :
-            return self.error_handler.emit('< Insert your token first >')
         con = sqlite3.connect("test.db")
         cur = con.cursor()
+        if login_status[0] == False :
+            return self.update_progress.emit('< Insert your token first >')
+        # con = sqlite3.connect("test.db")
+        # cur = con.cursor()
         params = (self.token_in,self.username)
         user = cur.execute("SELECT * FROM user WHERE user_token==? AND username==?",params).fetchall()
         charge = user[0][3]
         plan = user[0][4]
-        if login_status[0] == False :
-            return self.update_progress.emit('< Insert your token first >')
-        elif charge >= plan:
+        if  charge >= plan:
             return self.update_progress.emit(f'< You sent {charge} messages. Buy new token plz >')
-            
         sleep(3)
         message = """
             Salam
         """
         phone_numbers = open("test-numbers.txt").read().split("\n")
-        count = 0
+        sent_count = 0
+        faliled_count = 0
         if len(phone_numbers) == 0:
             return self.update_progress.emit('Please Add New Phone Numbers')
         
         for phone in phone_numbers:
+            while self.is_paused:
+                sleep(1)
+                print('paused')
+                if self.is_paused == False :
+                    break
+            if self.is_killed :
+                print('break')
+                break
             if charge >= plan:
                 return self.update_progress.emit(f'< You sent {charge} messages. Buy new token plz >')
             pn = phone
@@ -132,6 +149,7 @@ class SendThread(QThread):
                         driver.find_element(By.XPATH,
                                             '//*[@id="main"]/footer/div[1]/div/span[2]/div/div[2]/div[2]/button').click()
                         self.update_progress.emit('Sent 😊')
+                        sent_count += 1 
                         print(params[0])
                         cur.execute("UPDATE user SET charge=charge+1 WHERE user_token =? ",params[0])
                         con.commit()
@@ -142,21 +160,329 @@ class SendThread(QThread):
                             f.write(phone + "\n")
                     except: 
                         self.update_progress.emit('Could not find Send button ! \n or Contact not found !')           
-                count += 1
-                
+                        faliled_count += 1
             except:
                 self.update_progress.emit("asdfdfa")
+        self.update_progress.emit(f"""\n <<<  Done  >>>\n\tsent : {sent_count}\n\tfaled : {faliled_count} """)
+    
+# class JobRunner(QRunnable):  
+#     signals = SendThread()
+
+#     def __init__(self):
+#         super().__init__()
+
+#         self.is_paused = False
+#         self.is_killed = False
+
+#     @pyqtSlot()
+#     def run(self):
+#         while True:
+#             while self.is_paused:
+#                 self.signals.wait(1)
+#                 sleep(2)
+#                 print('paused')
+
+#             if self.is_killed:
+#                 print('breake')
+#                 break
+
+#     def pause(self):
+#         self.is_paused = True
+#         print('clicked pause ')
+
+#     def resume(self):
+#         self.is_paused = False
+#         print('clicked resume ')
+#     def kill(self):
+#         self.is_killed = True
+#         print('clicked cancel ')
+
+class ProfilePopup(QtWidgets.QWidget):
+    def __init__(self):
+        super().__init__()
+        if login_status[0] == False :
+            return print('doo nothing')
+        con = sqlite3.connect("test.db")
+        cur = con.cursor()
+        params = (login_detail['token'],login_detail['username'])
+        user = cur.execute("SELECT * FROM user WHERE user_token==? AND username==?",params).fetchall()
+        _translate = QtCore.QCoreApplication.translate
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        self.setAttribute(QtCore.Qt.WA_StyledBackground)
+        self.setFixedSize(320,300)
+        self.setWindowTitle('profile')
+        self.setWindowIcon(QtGui.QIcon("profile-icon.png"))
+        self.setWindowFlag(QtCore.Qt.WindowCloseButtonHint, False)
+        self.setAutoFillBackground(True)
+        self.setStyleSheet('''
+            ProfilePopup {
+                background: rgba(64, 64, 64, 64);
                 
+            }
+            QWidget#container {
+                border: 2px solid darkGray;
+                border-radius: 4px;
+                background: rgb(64, 64, 64);
+            }
+            QWidget#container > QLabel {
+                color: white;
+                font-family : "Lucida Console", "Courier New", monospace;
+            }
+            QLabel#title {
+                font-size: 25pt;
+            }
+            QPushButton {
+            border: 2px solid #8f8f91;
+            border-radius: 6px;
+            background-color: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                            stop: 0 #f6f7fa, stop: 1 #dadbde);
+            min-width: 80px;
+            }
+        ''')
+        fullLayout = QtWidgets.QVBoxLayout(self)    
+
+        self.container = QtWidgets.QWidget(
+            autoFillBackground=True, objectName='container')
+        fullLayout.addWidget(self.container, alignment=QtCore.Qt.AlignCenter)
+        self.container.setFixedSize(300,280)
+        # self.container.setGeometry(QtCore.QRect(0,0,230,280))
+        # self.container.setSizePolicy(
+        #     QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Maximum)
+
+        buttonSize = self.fontMetrics().height()
+
+        # layout = QtWidgets.QVBoxLayout(self.container)
+        # layout.setContentsMargins(
+        #     buttonSize * 2, buttonSize, buttonSize * 2, buttonSize)
+        # self.main = QtWidgets.QWidget(self.container)      
+        title = QtWidgets.QLabel(self.container)
+        title.setGeometry(QtCore.QRect(100,10,100,30))
+        title.setAlignment(QtCore.Qt.AlignCenter)
+        title.setStyleSheet("font-size : 15px;")
+        title.setText(_translate("maiwindow" ,"Profile"))
+        
+        username_label = QtWidgets.QLabel(self.container)
+        username_label.setGeometry(QtCore.QRect(20,60,60,30))
+        username_label.setText(_translate("maiwindow" ,"Username : "))
+        
+        fullLayout.addWidget(self.container)
+        username = user[0][1]
+        username_val = QtWidgets.QLabel(self.container)
+        username_val.setGeometry(QtCore.QRect(90,60,190,30))
+        username_val.setAlignment(QtCore.Qt.AlignCenter)
+        username_val.setText(_translate("maiwindow" ,f"{username}"))
+        
+        token_label = QtWidgets.QLabel(self.container)
+        token_label.setGeometry(QtCore.QRect(20,90,60,30))
+        token_label.setText(_translate("maiwindow" ,"Token : "))
+        token = user[0][2]
+        token_val = QtWidgets.QLabel(self.container)
+        token_val.setGeometry(QtCore.QRect(90,90,190,30))
+        token_val.setAlignment(QtCore.Qt.AlignCenter)
+        token_val.setText(_translate("maiwindow" ,f"{token}"))
+        
+        total_label = QtWidgets.QLabel(self.container)
+        total_label.setGeometry(QtCore.QRect(20,120,60,30))
+        total_label.setText(_translate("maiwindow" ,"Total : "))
+        total = user[0][4]
+        total_val = QtWidgets.QLabel(self.container)
+        total_val.setGeometry(90,120,190,30)
+        total_val.setAlignment(QtCore.Qt.AlignCenter)
+        total_val.setText(_translate("maiwindow" ,f"{total}"))
+        
+        sent_label = QtWidgets.QLabel(self.container)
+        sent_label.setGeometry(20,150,60,30)
+        sent_label.setText(_translate("maiwindow" ,"Sent : "))
+        sent = user[0][3]
+        sent_val = QtWidgets.QLabel(self.container)
+        sent_val.setGeometry(90,150,190,30)
+        sent_val.setAlignment(QtCore.Qt.AlignCenter)
+        sent_val.setText(_translate("maiwindow" ,f"{sent}"))   
+             
+        exp_date_label = QtWidgets.QLabel(self.container)
+        exp_date_label.setGeometry(20,180,70,30)
+        exp_date_label.setText(_translate("maiwindow" ,"EXP date : "))
+        
+        exp_date_val = QtWidgets.QLabel(self.container)
+        exp_date_val.setGeometry(90,180,190,30)
+        exp_date_val.setAlignment(QtCore.Qt.AlignCenter)
+        exp_date_val.setText(_translate("maiwindow" ,"exp date"))
+        
+        okButtton = QtWidgets.QPushButton(self.container)
+        okButtton.setGeometry(100,230,100,25)
+        okButtton.setText(_translate("maiwindow" ,"OK"))
+        okButtton.setAutoDefault(True)
+        okButtton.setDefault(True)
+        okButtton.clicked.connect(self.accept)
+        self.loop = QtCore.QEventLoop(self)
+
+    def accept(self):
+
+        self.loop.exit(False)
+        profilepopup_status[0] = False
+
+    def exec_(self):
+        tokenPopup_status[0] = False
+        self.show()
+        # self._raise()
+        res = self.loop.exec_()
+        self.hide()
+        return res
+    
+
+class LoginPopup(QtWidgets.QWidget):
+    def __init__(self):
+        super().__init__()
+        if tokenPopup_status[0] == True :
+            return print('doo nothing')
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        self.setAttribute(QtCore.Qt.WA_StyledBackground)
+        self.setFixedSize(350,200)
+        self.setWindowTitle('Token')
+        self.setWindowIcon(QtGui.QIcon('token-icon.png'))
+        self.setWindowFlag(QtCore.Qt.WindowCloseButtonHint, False)
+        self.setAutoFillBackground(True)
+        self.setStyleSheet('''
+            LoginPopup {
+                background: rgba(64, 64, 64, 64);
+            }
+            QWidget#container {
+                border: 2px solid darkGray;
+                border-radius: 4px;
+                background: rgb(64, 64, 64);
+            }
+            QWidget#container > QLabel {
+                color: white;
+            }
+            QLabel#title {
+                font-size: 20pt;
+            }
+            QPushButton {
+            border: 2px solid #8f8f91;
+            border-radius: 6px;
+            background-color: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                            stop: 0 #f6f7fa, stop: 1 #dadbde);
+            min-width: 80px;
+            }
+        ''')
+        fullLayout = QtWidgets.QVBoxLayout(self)
+
+        self.container = QtWidgets.QWidget(
+            autoFillBackground=True, objectName='container')
+        fullLayout.addWidget(self.container, alignment=QtCore.Qt.AlignCenter)
+        self.container.setSizePolicy(
+            QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Maximum)
+
+        buttonSize = self.fontMetrics().height()
+
+        layout = QtWidgets.QVBoxLayout(self.container)
+        layout.setContentsMargins(
+            buttonSize * 2, buttonSize, buttonSize * 2, buttonSize)
+
+        title = QtWidgets.QLabel(
+            'Enter your token', 
+            objectName='title', alignment=QtCore.Qt.AlignCenter)
+        layout.addWidget(title)
+        
+        layout.addWidget(QtWidgets.QLabel('Username'))
+        self.usernameEdit = QtWidgets.QLineEdit()
+        layout.addWidget(self.usernameEdit)
+        layout.addWidget(QtWidgets.QLabel('Token'))
+        self.tokenEdit = QtWidgets.QLineEdit()
+        layout.addWidget(self.tokenEdit)
+        
+        buttonBox = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok|QtWidgets.QDialogButtonBox.Cancel)
+        layout.addWidget(buttonBox)
+        buttonBox.accepted.connect(self.accept)
+        buttonBox.rejected.connect(self.reject)
+        self.okButton = buttonBox.button(buttonBox.Ok)
+        self.okButton.setEnabled(False)
+
+        self.usernameEdit.textChanged.connect(self.checkInput)
+        self.tokenEdit.textChanged.connect(self.checkInput)
+        self.usernameEdit.returnPressed.connect(lambda:self.tokenEdit.setFocus())
+        self.tokenEdit.returnPressed.connect(self.accept)
+
+        # parent.installEventFilter(self)
+
+        self.loop = QtCore.QEventLoop(self)
+        self.usernameEdit.setFocus()
 
 
+    def validateToken(self):
+        login_detail['username'] = self.usernameEdit.text()
+        login_detail['token'] = self.tokenEdit.text()
+        self.tokenThread = TokenThread(token_in=login_detail['token'],username=login_detail['username'])
+        self.tokenThread.start()
+        self.tokenThread.update_progress.connect(self.token_notif)
+        
+    def token_notif(self,message):
+        self.msg = QMessageBox()
+        self.msg.setText(message)
+        self.msg.setWindowTitle("Info")
+        self.msg.setStandardButtons(QMessageBox.Ok)
+        self.msg.exec()
+        
+    def checkInput(self):
+        self.okButton.setEnabled(bool(self.username() and self.token()))
+
+    def username(self):
+        return self.usernameEdit.text()
+
+    def token(self):
+        return self.tokenEdit.text()
+
+    def accept(self):
+        if self.username() and self.token():
+            login_detail['username'] = self.usernameEdit.text()
+            login_detail['token'] = self.tokenEdit.text()
+            self.tokenThread = TokenThread(token_in=login_detail['token'],username=login_detail['username'])
+            self.tokenThread.start()
+            self.tokenThread.update_progress.connect(self.token_notif)
+            self.loop.exit(True)
+            tokenPopup_status[0] = False
+
+    def reject(self):
+        self.loop.exit(False)
+        tokenPopup_status[0] = False
+
+    # def showEvent(self, event):
+    #     self.setGeometry(self.parent().rect())
+
+    def eventFilter(self, source, event):
+        if event.type() == event.Resize:
+            self.setGeometry(source.rect())
+        return super().eventFilter(source, event)
+    def exec_(self):
+        self.show()
+        # self._raise()
+        res = self.loop.exec_()
+        self.hide()
+        return res
+        
+        
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
         MainWindow.resize(1200, 500)
+        # MainWindow.setWindowTitle('WhatsApp')
         MainWindow.setMinimumSize(QtCore.QSize(1200, 500))
         MainWindow.setMaximumSize(QtCore.QSize(1200, 500))
+        
         self.centralwidget = QtWidgets.QWidget(MainWindow)
         self.centralwidget.setObjectName("centralwidget")
+        self.centralwidget.setWindowIcon(QtGui.QIcon('test.png'))
+        #self.centralwidget.setStyleSheet("background-color : background-color: rgb( 50, 205, 50);")
+        # self.centralwidget.setStyleSheet('''
+        #     QPushButton {
+        #     border: 2px solid #8f8f91;
+        #     border-radius: 6px;
+        #     background-color: rgb(45,67,209);
+                                            
+        #     min-width: 80px;
+        #     }
+        #         ''')
         ####################  verticalLayout_1  left Menu ####################
         self.verticalLayoutWidget = QtWidgets.QWidget(self.centralwidget)
         self.verticalLayoutWidget.setGeometry(QtCore.QRect(0, 0, 171, 511))
@@ -171,27 +497,35 @@ class Ui_MainWindow(object):
         self.loginButton.setGeometry(QtCore.QRect(20, 10, 131, 71))
         self.loginButton.setObjectName("loginButton")
         self.loginButton.clicked.connect(self.loginUI)
-        ####################  tokenButton ####################
-        self.tokenButton = QtWidgets.QPushButton(self.menu)
-        self.tokenButton.setGeometry(QtCore.QRect(20, 100, 131, 71))
-        self.tokenButton.setObjectName("tokenButton")
-        self.tokenButton.clicked.connect(self.tokenUI)
+        ####################  profButton ####################
+        self.profButton = QtWidgets.QPushButton(self.menu)
+        self.profButton.setGeometry(QtCore.QRect(20, 100, 131, 71))
+        self.profButton.setObjectName("profButton")
+        self.profButton.clicked.connect(self.profUI)
+        if login_status[0] == False :
+            self.profButton.setDisabled(True)
         ####################  exitButton ####################
         self.exitButton = QtWidgets.QPushButton(self.menu)
         self.exitButton.setGeometry(QtCore.QRect(20, 450, 131, 31))
         self.exitButton.setObjectName("exitButton")
+        self.exitButton.clicked.connect(self.exitUI)
+
+
         ####################  logButton ####################
-        self.logButton = QtWidgets.QPushButton(self.menu)
-        self.logButton.setGeometry(QtCore.QRect(20, 420, 131, 31))
-        self.logButton.setObjectName("logButton")
+        # self.logButton = QtWidgets.QPushButton(self.menu)
+        # self.logButton.setGeometry(QtCore.QRect(20, 420, 131, 31))
+        # self.logButton.setObjectName("logButton")
         ####################  aboutButton ####################
         self.aboutButton = QtWidgets.QPushButton(self.menu)
         self.aboutButton.setGeometry(QtCore.QRect(20, 280, 131, 71))
         self.aboutButton.setObjectName("aboutButton")
-        ####################  settingButton ####################
-        self.settingButton = QtWidgets.QPushButton(self.menu)
-        self.settingButton.setGeometry(QtCore.QRect(20, 190, 131, 71))
-        self.settingButton.setObjectName("settingButton")
+        ####################  logoutButton ####################
+        self.logoutButton = QtWidgets.QPushButton(self.menu)
+        self.logoutButton.setGeometry(QtCore.QRect(20, 190, 131, 71))
+        self.logoutButton.setObjectName("logoutButton")
+        self.logoutButton.clicked.connect(self.logoutUI)
+        if login_status[0] == False :
+            self.logoutButton.setDisabled(True)
         ####################  verticalLayout_2  Right side ####################
         self.verticalLayout.addWidget(self.menu)
         self.verticalLayoutWidget_2 = QtWidgets.QWidget(self.centralwidget)
@@ -202,17 +536,35 @@ class Ui_MainWindow(object):
         self.verticalLayout_2.setObjectName("verticalLayout_2")
         self.main = QtWidgets.QWidget(self.verticalLayoutWidget_2)
         self.main.setObjectName("main")
+        effect = QGraphicsOpacityEffect(self.main)
+        self.main.setGraphicsEffect(effect)
+        # self.anim = QPropertyAnimation(self.main, b"pos")
+        # self.anim.setEndValue(QPoint(50, 0))
+        # self.anim.setStartValue(QPoint(-100,5))
+        # self.anim.setDuration(1300)
+        # self.anim_2 = QPropertyAnimation(effect, b"opacity")
+        # self.anim_2.setStartValue(0)
+        # self.anim_2.setEndValue(1)
+        # self.anim_2.setDuration(1000)
+        # self.anim_group = QParallelAnimationGroup()
+        # self.anim_group.addAnimation(self.anim)
+        # self.anim_group.addAnimation(self.anim_2)
+        # self.anim_group.start()
         ####################  usage   ####################
         self.usage = QtWidgets.QLabel(self.main)
-        self.usage.setGeometry(QtCore.QRect(320, 190, 301, 71))
+        self.usage.setGeometry(QtCore.QRect(290, 190, 410, 100))
         self.usage.setObjectName("usage")
+        self.usage.setStyleSheet('''font-family : "Lucida Console", "Courier New", monospace; font-size : 20px; color:white''')
         ####################  label   ####################
         self.label = QtWidgets.QLabel(self.main)
-        self.label.setGeometry(QtCore.QRect(270, 140, 71, 31))
+        self.label.setGeometry(QtCore.QRect(250, 140, 71, 31))
         self.label.setObjectName("label")
+        self.label.setStyleSheet('''font-family : "Lucida Console", "Courier New", monospace; font-size : 20px; color:white''')
+        
         self.author = QtWidgets.QLabel(self.main)
-        self.author.setGeometry(QtCore.QRect(10, 455, 61, 16))
+        self.author.setGeometry(QtCore.QRect(100, 455, 61, 16))
         self.author.setObjectName("author")
+        self.author.setStyleSheet('''font-family : "Lucida Console", "Courier New", monospace; font-size : 15px; color:white''')
         self.verticalLayout_2.addWidget(self.main)
         MainWindow.setCentralWidget(self.centralwidget)
         self.menubar = QtWidgets.QMenuBar(MainWindow)
@@ -233,16 +585,20 @@ class Ui_MainWindow(object):
         self.verticalLayout_2.removeWidget(self.main)
         # configure Buttons
         self.loginButton.setDisabled(True)
-        self.tokenButton.setEnabled(True)
+        self.profButton.setEnabled(True)
         self.aboutButton.setEnabled(True)
-        self.settingButton.setEnabled(True)
+        if login_status[0] == False :
+            self.logoutButton.setDisabled(True)
+            self.profButton.setDisabled(True)
+        else :
+            self.logoutButton.setEnabled(True)
         ######################################
         self.main = QtWidgets.QWidget(self.verticalLayoutWidget_2)
         self.main.setObjectName("main")
         #############      counterlabel     ###################   
-        self.counterlabel = QtWidgets.QLabel(self.main)
-        self.counterlabel.setGeometry(QtCore.QRect(500, 20, 131, 41))
-        self.counterlabel.setObjectName("counterlabel")
+        # self.counterlabel = QtWidgets.QLabel(self.main)
+        # self.counterlabel.setGeometry(QtCore.QRect(500, 20, 131, 41))
+        # self.counterlabel.setObjectName("counterlabel")
         
         #############      sendButton     ###################
         self.sendButton = QtWidgets.QPushButton(self.main)
@@ -252,20 +608,22 @@ class Ui_MainWindow(object):
         
         #############      retryButton     ###################
         self.retryButton = QtWidgets.QPushButton(self.main)
-        self.retryButton.setGeometry(QtCore.QRect(150, 10, 141, 51))
+        self.retryButton.setGeometry(QtCore.QRect(170, 10, 141, 51))
         self.retryButton.setObjectName("retryButton")
-        self.retryButton.clicked.connect(self.loginUI)
-        #############      Login Thread     ####################
-        self.login = QrThread()
-        self.login.start()
-        self.login.update_progress.connect(self.qr_update)
+        self.retryButton.clicked.connect(self.qr_update)
         
+        #############      tokenButton     ###################
+        self.tokenButton = QtWidgets.QPushButton(self.main)
+        self.tokenButton.setGeometry(QtCore.QRect(340, 10, 141, 51))
+        self.tokenButton.setObjectName("tokenButton")
+        self.tokenButton.clicked.connect(self.tokenUI)
+        self.tokenButton.setEnabled(True)
         #############      qrlabel     ####################
         self.qrlabel = QtWidgets.QLabel(self.main)
         self.qrlabel.setGeometry(QtCore.QRect(6, 80, 1181, 500))
         self.qrlabel.maximumSize()
         self.qrlabel.setScaledContents(True)
-        self.qrlabel.setText("QRcode")
+        self.qrlabel.setText("")
         img = QtGui.QPixmap("/wtf.jpg")
         self.qrlabel.setPixmap(img)
         self.qrlabel.setStyleSheet("background-image : url(test.png);")
@@ -273,46 +631,78 @@ class Ui_MainWindow(object):
         self.qrlabel.setObjectName("qrlabel")
         ##########################################
         self.verticalLayout_2.addWidget(self.main) 
-        self.counterlabel.setText(_translate("MainWindow", "x sec left"))
+        # self.counterlabel.setText(_translate("MainWindow", "x sec left"))
+        self.status_label = QtWidgets.QLabel(self.main)
+        self.status_label.setGeometry(QtCore.QRect(500, 0, 71, 31))
+        self.status_label.setObjectName("status_label")
+        self.status_label.setFixedSize(200,70)
+        self.status_label.setStyleSheet('''font-family : "Lucida Console", "Courier New", monospace; font-size : 15px; color:red''')        
+        self.status_label.setText(_translate("MainWindow", "You are not Login X "))
+        if login_status[0] == True:
+            self.status_label.setStyleSheet('''font-family : "Lucida Console", "Courier New", monospace; font-size : 15px; color:green''')
+            self.status_label.setText(_translate("MainWindow", "Loged in ✔"))
         self.sendButton.setText(_translate("MainWindow", "Send"))
         self.retryButton.setText(_translate("MainWindow", "Retry"))
+        self.tokenButton.setText(_translate("MainWindow", "Token"))
+        
+        
+    def qr_update(self,message): 
+        if login_status[0] == False :
+             return self.error_handler('Insert your token first')
+        #############      Login Thread     ####################
+        self.login = QrThread()
+        self.login.start()
+        self.login.update_progress.connect(self.error_handler)
+        if self.login.isRunning():
+            self.tokenButton.setDisabled(True)  
+            self.aboutButton.setDisabled(True)
+            self.logoutButton.setDisabled(True)
+            self.sendButton.setDisabled(True)
+            self.retryButton.setStyleSheet("background-color : rgba(89, 99, 110, 1);")
+        self.verticalLayout_2.addWidget(self.main)
+        self.login.finished.connect(self.qr_image)
 
-    def qr_update(self,message):
+
+    def qr_image(self):
         self.loginButton.setEnabled(True)
+        self.sendButton.setEnabled(True)
         self.tokenButton.setEnabled(True)
+        self.profButton.setEnabled(True)
         self.aboutButton.setEnabled(True)
-        self.settingButton.setEnabled(True)
-        self.msg = QMessageBox()
-        self.msg.setText(message)
-        self.msg.setWindowTitle("Info")
-        self.msg.setStandardButtons(QMessageBox.Ok)
-        self.msg.exec()
+        self.logoutButton.setEnabled(True)
+        self.retryButton.setStyleSheet("background-color : rgba(52, 58, 64, 1);")
         self.img = QtGui.QPixmap("/wtf.jpg")
+        self.qrlabel.resize(1000, 438)
+        self.qrlabel.setObjectName("qrlabel")
         self.qrlabel.setPixmap(self.img)
         self.qrlabel.setStyleSheet("background-image : url(test.png);")
-
+        self.verticalLayout_2.addWidget(self.main) 
+    
     def sendUI(self):
-
+        # self.threadpool = QThreadPool()
+        # self.runner = JobRunner()
+        # self.runner.signals.update_progress.connect(self.logger)
+        self.logoutButton.setDisabled(True)
+        self.loginButton.setEnabled(True)
+        self.sendButton.setEnabled(True)
         _translate = QtCore.QCoreApplication.translate
         self.verticalLayout_2.removeWidget(self.main)
         self.main = QtWidgets.QWidget(self.verticalLayoutWidget_2)
         self.main.setObjectName("main")
+        self.main.setStyleSheet("QPushButton:pressed {background-color : rgba(64, 64, 64, 0.75);}")
         self.plainTextEdit = QtWidgets.QPlainTextEdit(self.main)
         self.plainTextEdit.setGeometry(QtCore.QRect(100, 80, 681, 261))
         self.plainTextEdit.setFrameShape(QtWidgets.QFrame.StyledPanel)
         self.plainTextEdit.setFrameShadow(QtWidgets.QFrame.Plain)
         self.plainTextEdit.setObjectName("plainTextEdit")
         self.plainTextEdit.setReadOnly(True)
-        
-        self.send = SendThread(token_in=login_detail['token'],username=login_detail['username'])
-        self.send.start()
-        self.send.update_progress.connect(self.logger)
-        self.send.error_handler.connect(self.error_handler)
+    
         #############      cancelButton     ####################
         self.cancelButton = QtWidgets.QPushButton(self.main)
         self.cancelButton.setGeometry(QtCore.QRect(100, 350, 111, 61))
         self.cancelButton.setObjectName("cancelButton")
         self.cancelButton.setText(_translate("MainWindow", "Cancel"))
+        self.cancelButton.setDisabled(True)
         self.cancelButton.clicked.connect(self.cancel_progress)
         #############      startButton     ####################
         self.startButton = QtWidgets.QPushButton(self.main)
@@ -326,26 +716,55 @@ class Ui_MainWindow(object):
         self.pauseButton.setObjectName("pauseButton")
         self.pauseButton.setText(_translate("MainWindow", "Pause"))
         self.pauseButton.clicked.connect(self.pause_progress)
-        self.verticalLayout_2.addWidget(self.main)
+        self.pauseButton.setDisabled(True)
         
+        self.resumeButton = QtWidgets.QPushButton(self.main)
+        self.resumeButton.setGeometry(QtCore.QRect(490, 350, 111, 61))
+        self.resumeButton.setObjectName("resumeButton")
+        self.resumeButton.setText(_translate("MainWindow", "Resume"))
+        self.resumeButton.pressed.connect(self.resume_progress)
+        self.resumeButton.setDisabled(True)
+        
+        self.verticalLayout_2.addWidget(self.main)
+    def resume_progress(self):
+        print('resume')
+        self.send.is_paused = False
     
     def pause_progress(self):
-        print('pause')
-        self.cancelButton.setDisabled(True)
-        self.startButton.setEnabled(True)
-        self.pauseButton.setEnabled(True)
-        self.send.wait()
-    
-    def start_progress(self):
         self.cancelButton.setEnabled(True)
-        self.send.start()
-    
-    def cancel_progress(self):
-        self.cancelButton.setDisabled(True)
-        self.send.exit()
+        self.resumeButton.setEnabled(True)
+        self.send.is_paused = True
+
+    def cancel_progress(self) :
+        try :
+            self.startButton.setEnabled(True)
+            self.send.is_paused = False
+            self.send.is_killed = True
+            print('cancel')
+            self.send.exit()
+        except :
+            print('here')
+        finally:
+            self.resumeButton.setDisabled(True)
+            self.pauseButton.setDisabled(True)
+            self.cancelButton.setDisabled(True)
+            
+    def start_progress(self):
+        # self.threadpool.start(self.runner)
+        try :
+            self.pauseButton.setEnabled(True)
+            self.resumeButton.setEnabled(True)
+            self.cancelButton.setEnabled(True)
+            self.send = SendThread(token_in=login_detail['token'],username=login_detail['username'])
+            self.send.start()
+            self.send.update_progress.connect(self.logger)
+            print('progress started')
+        except:
+            pass
+        finally:
+            self.startButton.setDisabled(True)
         
-    
-    
+        
     def logger(self,message):
         try :
             self.plainTextEdit.appendPlainText(message)
@@ -359,73 +778,132 @@ class Ui_MainWindow(object):
         self.msg.exec()
 
     def tokenUI(self):
+        if tokenPopup_status[0] == True:
+            return ''
+        if login_status[0] == True:
+            return ''
         _translate = QtCore.QCoreApplication.translate
-        self.verticalLayout_2.removeWidget(self.main)
-        # configure Buttons
-        self.tokenButton.setDisabled(True)
-        self.aboutButton.setEnabled(True)
-        self.settingButton.setEnabled(True)
-        self.loginButton.setEnabled(True)
-        #################################
-        self.main = QtWidgets.QWidget(self.verticalLayoutWidget_2)
-        self.main.setObjectName("main")
-        #############      token_lable     ####################
-        self.token_lable = QtWidgets.QLabel(self.main)
-        self.token_lable.setGeometry(QtCore.QRect(130, 162, 60, 60))
-        self.token_lable.setObjectName("token_lable")
-        self.token_lineEdit = QtWidgets.QLineEdit(self.main)
-        self.token_lineEdit.setGeometry(QtCore.QRect(200, 180, 400, 30))
-        self.token_lineEdit.setObjectName("token_lineEdit")
-        #############      username_lable     ####################        
-        self.username_lable = QtWidgets.QLabel(self.main)
-        self.username_lable.setGeometry(QtCore.QRect(120, 102, 60, 60))
-        self.username_lable.setObjectName("username_lable")
-        self.username_lineEdit = QtWidgets.QLineEdit(self.main)
-        self.username_lineEdit.setGeometry(QtCore.QRect(200, 120, 400, 30))
-        self.username_lineEdit.setObjectName("username_lineEdit")  
-        #############      validateButton     #################### 
-        self.validateButton = QtWidgets.QPushButton(self.main)
-        self.validateButton.setGeometry(QtCore.QRect(340, 240, 121, 61))
-        self.validateButton.setObjectName("validateButton")
-        self.validateButton.clicked.connect(self.validateToken)
-        ##########################################################
-        self.verticalLayout_2.addWidget(self.main)      
-        self.token_lable.setText(_translate("MainWindow", "Token : "))
-        self.username_lable.setText(_translate("MainWindow", "Username : "))
-        self.validateButton.setText(_translate("MainWindow", "Validate"))    
-    
-    def validateToken(self):
-        login_detail['username'] = self.username_lineEdit.text()
-        login_detail['token'] = self.token_lineEdit.text()
-        self.token = TokenThread(token_in=login_detail['token'],username=login_detail['username'])
-        self.token.start()
-        self.token.update_progress.connect(self.token_notif)
+        dialog = LoginPopup()
+        tokenPopup_status[0] = True
+        try :
+            if dialog.exec_():
+                pass
+            #     self.status_label.setStyleSheet('''font-family : "Lucida Console", "Courier New", monospace; font-size : 15px; color:green''')
+            #     self.status_label.setText(_translate("MainWindow", "Loged in ✔"))
+            #     self.logoutButton.setEnabled(True)
+            #     self.profButton.setEnabled(True)
+            # else :
+            #     self.status_label.setStyleSheet('''font-family : "Lucida Console", "Courier New", monospace; font-size : 15px; color:red''')
+            #     self.status_label.setText(_translate("MainWindow", "Your are not Login X"))
+        
+        except:
+            pass
+        
+        finally:
+            sleep(2)
+            print(login_status[0])
+            if login_status[0] == True:
+                self.status_label.setStyleSheet('''font-family : "Lucida Console", "Courier New", monospace; font-size : 15px; color:green''')
+                self.status_label.setText(_translate("MainWindow", "Loged in ✔"))
+                self.logoutButton.setEnabled(True)
+                self.profButton.setEnabled(True)
+            elif login_status[0] == False:
+                self.status_label.setStyleSheet('''font-family : "Lucida Console", "Courier New", monospace; font-size : 15px; color:red''')
+                self.status_label.setText(_translate("MainWindow", "You are not Login X"))
+                              
+   
+    def logoutUI(self): 
+        _translate = QtCore.QCoreApplication.translate
+        self.logoutmsg = QMessageBox.question(self.centralwidget,'Exit','Are you sure you want to logout?',QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        # self.centralwidget.setStyleSheet("QLabel{color:red; font-size: 50px;}")
+        if self.logoutmsg == QMessageBox.Yes:
+            driver.get('chrome://settings/clearBrowserData')
+            sleep(2)
+            actions = ActionChains(driver)
+            actions.key_down(Keys.TAB)
+            actions.key_down(Keys.ENTER)
+            actions.key_up(Keys.TAB)
+            actions.key_up(Keys.ENTER)
+            actions.perform()
+            self.profButton.setDisabled(True)
 
-    def token_notif(self,message):
-        self.msg = QMessageBox()
-        self.msg.setText(message)
-        self.msg.setWindowTitle("Info")
-        self.msg.setStandardButtons(QMessageBox.Ok)
-        self.msg.exec()
-    
+            # //*[@id="clearBrowsingDataConfirm"]
+            # wait.until(EC.visibility_of_element_located((By.ID, 'clearBrowsingDataConfirm'))).send_keys(Keys.ENTER)
+            self.status_label.setStyleSheet('''font-family : "Lucida Console", "Courier New", monospace; font-size : 15px; color:red''')
+            self.status_label.setText(_translate("MainWindow", "You are not Login X "))
+            print(driver.get_cookies())
+            
+            login_status[0] = False
+            login_detail['username'] = ''
+            login_detail['token'] = ''
+        else:
+            pass
+        
+    def profUI(self):
+        if profilepopup_status[0] == True :
+            return ''
+        dialog = ProfilePopup()
+        profilepopup_status[0] = True
+        if dialog.exec_():
+            pass
+        
+    def exitUI(self):
+        self.exitmsg = QMessageBox.question(self.centralwidget,'Exit','Are you sure you want to close the window?',QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if self.exitmsg == QMessageBox.Yes:
+            print('Window closed')
+            sys.exit(app.exec_())
+            # login_status[0] = False
+        else:
+            pass
+            
+        
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
-        MainWindow.setWindowTitle(_translate("MainWindow", "MainWindow"))
+        MainWindow.setWindowTitle(_translate("MainWindow", "WhatsApp"))
+        MainWindow.setWindowIcon(QtGui.QIcon("logo.png"))
         self.loginButton.setText(_translate("MainWindow", "Login"))
-        self.tokenButton.setText(_translate("MainWindow", "Token"))
+        self.profButton.setText(_translate("MainWindow", "Profile"))
         self.exitButton.setText(_translate("MainWindow", "exit"))
-        self.logButton.setText(_translate("MainWindow", "Log"))
         self.aboutButton.setText(_translate("MainWindow", "About"))
-        self.settingButton.setText(_translate("MainWindow", "Setting"))
+        self.logoutButton.setText(_translate("MainWindow", "Logout"))
         self.usage.setText(_translate("MainWindow", "<html><head/><body><p>1. Put your numbers to numbers.txt file</p><p>2. Insert your token</p><p>3. Send message</p></body></html>"))
         self.label.setText(_translate("MainWindow", "<html><head/><body><p><span style=\" font-size:11pt;\">Usage : </span></p></body></html>"))
         self.author.setText(_translate("MainWindow", "Alizare0017"))
 
-
+# (64,145,108)
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
     MainWindow = QtWidgets.QMainWindow()
+    MainWindow.setStyleSheet('''
+    QMainWindow {
+        background-image : url(gradient.png);
+        font-size : 100px;
+        width: 10px; /* when vertical */
+        height: 10px; /* when horizontal */
+    }
+    QMessageBox {
+        color : white;
+        font-family : "Lucida Console", "Courier New", monospace;
+    }
+    
+    QPushButton {
+        border: 2px solid #343a40;
+        border-radius: 4px;
+        font-family : "Lucida Console", "Courier New", monospace;
+        font-size : 15px;
+        background-color: #343a40;
+        color : white;                    
+        min-width: 80px;
+        border-style: outset;
+        border-width: 2px;
+        border-color: #495057
+    }
+    QPushButton:pressed {
+    background-color : rgba(52, 58, 64, 0.75);
+    }
+    ''')
     ui = Ui_MainWindow()
     ui.setupUi(MainWindow)
     MainWindow.show()
     sys.exit(app.exec_())
+
