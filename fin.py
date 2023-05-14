@@ -3,6 +3,7 @@ from time import sleep
 import sys
 import requests
 import logging
+import datetime
 import sqlite3
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
@@ -16,6 +17,7 @@ profilepopup_status = [False]
 tokenPopup_status = [False]
 login_status = [False]
 login_detail = {'username':'', 'token':''}
+response_info = []
 logging.basicConfig(filename="log.txt",
                     format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
                     datefmt='%H:%M:%S',
@@ -61,16 +63,14 @@ class TokenThread(QThread):
     def run(self):
         header = {'username':self.username,'token':self.token_in}
         response = requests.post('https://whatsapp.iran.liara.run/api/users/login/',headers=header)
-        if not response.status_code == 200 :
-            return self.update_progress.emit(f'{response.status_code} : {response.reason}')
+        # if not response.status_code == 200 :
+        #     return self.update_progress.emit(f'{response.status_code} : {response.reason}')
         user = response.json()
+        response_info.append(user)
         try :
             if int(user[0]['sent']) >= int(user[0]['charge']) :
-                print('2')
                 login_status[0] = False
-                print('3')
                 return self.update_progress.emit('Token Expired 🦕')
-            print('4')
             login_status[0] = True
             return self.update_progress.emit('Token Validated ✔')
 
@@ -123,16 +123,16 @@ class SendThread(QThread):
             return self.update_progress.emit('< Insert your token first >')
         # con = sqlite3.connect("test.db")
         # cur = con.cursor()
-        params = (self.token_in,self.username)
-        user = cur.execute("SELECT * FROM user WHERE user_token==? AND username==?",params).fetchall()
-        charge = user[0][3]
-        plan = user[0][4]
-        if  charge >= plan:
-            return self.update_progress.emit(f'< You sent {charge} messages. Buy new token plz >')
+        # params = (self.token_in,self.username)
+        # user = cur.execute("SELECT * FROM user WHERE user_token==? AND username==?",params).fetchall()
+        sent = response_info[0][0]['sent']
+        charge = response_info[0][0]['charge']
+        if  sent >= charge:
+            return self.update_progress.emit(f'< You sent {sent} messages. Buy new token plz >')
         sleep(3)
-        message = """
-            Salam
-        """
+        with open('message.txt','r',encoding='utf-8') as text:
+            message = """""".join(text.readlines())
+            print(message)
         phone_numbers = open("numbers.txt").read().split("\n")
         sent_count = 0
         faliled_count = 0
@@ -150,11 +150,11 @@ class SendThread(QThread):
             if self.is_killed :
                 self.update_progress.emit('Cancel')
                 break
-            if charge >= plan:
+            if sent >= charge:
                 return self.update_progress.emit(f'< You sent {charge} messages. Buy new token plz >')
             pn = phone
             self.update_progress.emit('sending to : '+ pn)
-            url = f'https://web.whatsapp.com/send?phone=+98{phone[1:]}&text={message}'
+            url = f'https://web.whatsapp.com/send?phone=+98{phone[1:]}'
             sleep(3)
             try:
                 driver.get(url)
@@ -164,14 +164,24 @@ class SendThread(QThread):
                 except:
                     try :
                         element = wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="main"]/footer/div[1]/div/span[2]/div/div[2]/div[2]/button')))
+                        print('here')
+                        driver.find_element(By.XPATH , 
+                                            '//*[@id="main"]/footer/div[1]/div/span[2]/div/div[2]/div[1]/div/div[1]/p').send_keys(message)
+                        print('here2')
+                        sleep(1)
                         driver.find_element(By.XPATH,
                                             '//*[@id="main"]/footer/div[1]/div/span[2]/div/div[2]/div[2]/button').click()
                         self.update_progress.emit('Sent 😊')
                         sent_count += 1 
-                        cur.execute("UPDATE user SET charge=charge+1 WHERE user_token =? ",params[0])
-                        con.commit()
-                        with open('sent-numbers.txt', 'a') as f:
-                            f.write(pn + "\n")
+                        # cur.execute("UPDATE user SET charge=charge+1 WHERE user_token =? ",params[0])
+                        # con.commit()
+                        headers = {'token':response_info[0][0]['token']}
+                        response = requests.post('https://whatsapp.iran.liara.run/api/users/send/', headers=headers)
+                        if response.status_code == 200 :
+                            with open('sent-numbers.txt', 'a') as f:
+                                f.write(pn + "\n")
+                        else :
+                            self.update_progress.emit('Internal server error !') 
                     except: 
                         with open('failed.txt','a') as failed :
                             failed.write(pn + "\n")
@@ -190,14 +200,19 @@ class ProfilePopup(QtWidgets.QWidget):
         super().__init__()
         if login_status[0] == False :
             return ''
-        con = sqlite3.connect("test.db")
-        cur = con.cursor()
-        params = (login_detail['token'],login_detail['username'])
-        user = cur.execute("SELECT * FROM user WHERE user_token==? AND username==?",params).fetchall()
+        # con = sqlite3.connect("test.db")
+        # cur = con.cursor()
+        # params = (login_detail['token'],login_detail['username'])
+        # user = cur.execute("SELECT * FROM user WHERE user_token==? AND username==?",params).fetchall()
         _translate = QtCore.QCoreApplication.translate
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         self.setAttribute(QtCore.Qt.WA_StyledBackground)
         self.setFixedSize(400,300)
+        headers = {'token':login_detail['token']}
+        response = requests.post('https://whatsapp.iran.liara.run/api/users/info/',headers=headers)
+        data = response.json()
+        response_info[0][0] = data
+        print(response_info)
         self.setWindowTitle('profile')
         self.setWindowIcon(QtGui.QIcon("img/profile-icon.png"))
         self.setWindowFlag(QtCore.Qt.WindowCloseButtonHint, False)
@@ -251,7 +266,8 @@ class ProfilePopup(QtWidgets.QWidget):
         username_label.setText(_translate("maiwindow" ,"Username : "))
         
         fullLayout.addWidget(self.container)
-        username = user[0][1]
+        username = data.get('username')
+        
         username_val = QtWidgets.QLabel(self.container)
         username_val.setGeometry(QtCore.QRect(100,60,260,30))
         username_val.setAlignment(QtCore.Qt.AlignCenter)
@@ -260,7 +276,7 @@ class ProfilePopup(QtWidgets.QWidget):
         token_label = QtWidgets.QLabel(self.container)
         token_label.setGeometry(QtCore.QRect(20,90,90,30))
         token_label.setText(_translate("maiwindow" ,"Token : "))
-        token = user[0][2]
+        token = data.get('token')
         token_val = QtWidgets.QLabel(self.container)
         token_val.setGeometry(QtCore.QRect(100,90,260,30))
         token_val.setAlignment(QtCore.Qt.AlignCenter)
@@ -269,7 +285,7 @@ class ProfilePopup(QtWidgets.QWidget):
         total_label = QtWidgets.QLabel(self.container)
         total_label.setGeometry(QtCore.QRect(20,120,90,30))
         total_label.setText(_translate("maiwindow" ,"Total : "))
-        total = user[0][4]
+        total = data.get('charge')
         total_val = QtWidgets.QLabel(self.container)
         total_val.setGeometry(100,120,260,30)
         total_val.setAlignment(QtCore.Qt.AlignCenter)
@@ -278,7 +294,7 @@ class ProfilePopup(QtWidgets.QWidget):
         sent_label = QtWidgets.QLabel(self.container)
         sent_label.setGeometry(20,150,90,30)
         sent_label.setText(_translate("maiwindow" ,"Sent : "))
-        sent = user[0][3]
+        sent = data.get('sent')
         sent_val = QtWidgets.QLabel(self.container)
         sent_val.setGeometry(100,150,260,30)
         sent_val.setAlignment(QtCore.Qt.AlignCenter)
@@ -289,9 +305,11 @@ class ProfilePopup(QtWidgets.QWidget):
         exp_date_label.setText(_translate("maiwindow" ,"EXP date : "))
         
         exp_date_val = QtWidgets.QLabel(self.container)
+        parsed_datetime = datetime.datetime.fromisoformat(data.get('exp_date').replace('Z', '+03:30'))
+        exp_date = parsed_datetime.strftime('%Y-%m-%d %H:%M:%S') #
         exp_date_val.setGeometry(100,180,260,30)
         exp_date_val.setAlignment(QtCore.Qt.AlignCenter)
-        exp_date_val.setText(_translate("maiwindow" ,"exp date"))
+        exp_date_val.setText(_translate("maiwindow" ,f"{exp_date}"))
         
         okButtton = QtWidgets.QPushButton(self.container)
         okButtton.setGeometry(130,230,100,25)
@@ -395,8 +413,8 @@ class LoginPopup(QtWidgets.QWidget):
 
 
     def validateToken(self):
-        login_detail['username'] = self.usernameEdit.text()
-        login_detail['token'] = self.tokenEdit.text()
+        # login_detail['username'] = self.usernameEdit.text()
+        # login_detail['token'] = self.tokenEdit.text()
         self.tokenThread = TokenThread(token_in=login_detail['token'],username=login_detail['username'])
         self.tokenThread.start()
         self.tokenThread.update_progress.connect(self.token_notif)
@@ -640,6 +658,7 @@ class Ui_MainWindow(object):
         scroll_bar = QtWidgets.QScrollBar()
         scroll_bar.setStyleSheet("background : #3a5c50;")
         self.plainTextEdit = QtWidgets.QPlainTextEdit(self.main)
+        self.plainTextEdit.setStyleSheet('background : #3A4147; color : white;')
         self.plainTextEdit.setVerticalScrollBar(scroll_bar)
         self.plainTextEdit.setGeometry(QtCore.QRect(100, 85, 685, 261))
         self.plainTextEdit.setFrameShape(QtWidgets.QFrame.StyledPanel)
@@ -783,6 +802,7 @@ class Ui_MainWindow(object):
                 login_status[0] = False
                 login_detail['username'] = ''
                 login_detail['token'] = ''
+                response_info = []
                 
             except:
                 pass
@@ -839,8 +859,8 @@ if __name__ == "__main__":
     }
     
     QPushButton {
-        border: 2px solid #343a40;
-        border-radius: 4px;
+        border: 4px solid #343a40;
+        border-radius: 10px;
         font-family : "Lucida Console", "Courier New", monospace;
         font-size : 15px;
         background-color: #343a40;
